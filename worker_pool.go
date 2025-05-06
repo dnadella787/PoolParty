@@ -110,6 +110,7 @@ func (wp *WorkerPool) startDispatcher() {
 		} else if len(wp.workerChannels) == wp.workerSize {
 			wp.idleCond.L.Lock()
 			wp.idle = true
+			wp.idleCond.Broadcast()
 			wp.idleCond.L.Unlock()
 		}
 		// TODO: maybe add an else w/ time.Sleep to reduce CPU cycle spinning
@@ -129,14 +130,7 @@ func (wp *WorkerPool) Enqueue(job Job) {
 	wp.qMu.Lock()
 	defer wp.qMu.Unlock()
 
-	emptyQ := wp.jobQueue.IsEmpty()
 	wp.jobQueue.Enqueue(&job)
-
-	if emptyQ {
-		wp.idleCond.L.Lock()
-		wp.idle = false
-		wp.idleCond.L.Unlock()
-	}
 }
 
 func (wp *WorkerPool) EnqueueJobs(jobs []*Job) {
