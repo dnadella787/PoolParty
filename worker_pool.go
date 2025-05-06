@@ -20,6 +20,8 @@ type WorkerPool struct {
 	runningThreads    *sync.WaitGroup
 	qMu               *sync.Mutex
 	jobQueue          *queue.Queue[*Job]
+	idle              bool
+	idleCond          *sync.Cond
 }
 
 func NewWorkerPool(maxWorkers int, initJobQueueSize int) (*WorkerPool, error) {
@@ -53,34 +55,40 @@ func NewWorkerPool(maxWorkers int, initJobQueueSize int) (*WorkerPool, error) {
 		runningThreads:    &runningThreads,
 		qMu:               &sync.Mutex{},
 		jobQueue:          queue.New[*Job](initJobQueueSize),
+		idle:              true,
+		idleCond:          sync.NewCond(&sync.Mutex{}),
 	}, nil
 }
 
 // Start simply starts the dispatcher and keeps on running until Stop()
 // is called
 func (wp *WorkerPool) Start() {
-	wp.startWithSelfTermination(false)
-}
-
-// RunTillTermination starts but will auto terminate itself when all
-// work is done. i.e. job queue is empty and all workers are free
-func (wp *WorkerPool) RunTillTermination() {
-	wp.startWithSelfTermination(true)
-}
-
-// startWithSelfTermination will terminate the dispatcher
-// and thread pool once the job queue is empty and all the
-// workers are free if selfTerminate is set to true
-func (wp *WorkerPool) startWithSelfTermination(selfTerminate bool) {
 	for _, w := range wp.workers {
 		w.Start(wp.workerCtx)
 	}
 
 	log.Debug("Worker thread pool initialized. Starting dispatcher...")
-	wp.startDispatcher(selfTerminate)
+	wp.startDispatcher()
 }
 
-func (wp *WorkerPool) startDispatcher(terminateSelf bool) {
+// Await waits for the job queue to be empty and all workers to idle
+func (wp *WorkerPool) Await() {
+	wp.idleCond.L.Lock()
+	defer wp.idleCond.L.Unlock()
+
+	for !wp.idle {
+		wp.idleCond.Wait()
+	}
+}
+
+// RunTillTermination starts but will auto terminate itself when all
+// work is done. i.e. job queue is empty and all workers are free
+func (wp *WorkerPool) RunTillTermination() {
+	wp.Await()
+	wp.Stop()
+}
+
+func (wp *WorkerPool) startDispatcher() {
 	wp.dispatcherRunning.Add(1)
 	defer wp.dispatcherRunning.Done()
 
@@ -99,9 +107,10 @@ func (wp *WorkerPool) startDispatcher(terminateSelf bool) {
 			chosenWorker := <-wp.workerChannels
 			chosenWorker <- *t
 			continue
-		} else if terminateSelf && len(wp.workerChannels) == wp.workerSize {
-			log.Debug("All jobs completed and workers free. Terminating workers and dispatcher.")
-			wp.cancelDispatcher()
+		} else if len(wp.workerChannels) == wp.workerSize {
+			wp.idleCond.L.Lock()
+			wp.idle = true
+			wp.idleCond.L.Unlock()
 		}
 		// TODO: maybe add an else w/ time.Sleep to reduce CPU cycle spinning
 		wp.qMu.Unlock()
@@ -119,7 +128,15 @@ func (wp *WorkerPool) Stop() {
 func (wp *WorkerPool) Enqueue(job Job) {
 	wp.qMu.Lock()
 	defer wp.qMu.Unlock()
+
+	emptyQ := wp.jobQueue.IsEmpty()
 	wp.jobQueue.Enqueue(&job)
+
+	if emptyQ {
+		wp.idleCond.L.Lock()
+		wp.idle = false
+		wp.idleCond.L.Unlock()
+	}
 }
 
 func (wp *WorkerPool) EnqueueJobs(jobs []*Job) {

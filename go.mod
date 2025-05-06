@@ -1,4 +1,4 @@
-module github.com/PoolParty
+module github.com/dnadella787/poolparty
 
 go 1.24.2
 
