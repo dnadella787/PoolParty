@@ -71,6 +71,15 @@ func (wp *WorkerPool) Start() {
 	go wp.startDispatcher()
 }
 
+// RunAndSelfTerminate will start the thread pool and run until the job
+// queue is empty and the workers are all free. It will then terminate
+// the thread pool
+func (wp *WorkerPool) RunAndSelfTerminate() {
+	wp.Start()
+	wp.Await()
+	wp.Stop()
+}
+
 // Await waits for the job queue to be empty and all workers to idle
 func (wp *WorkerPool) Await() {
 	wp.idleCond.L.Lock()
