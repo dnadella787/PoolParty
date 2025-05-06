@@ -68,7 +68,7 @@ func (wp *WorkerPool) Start() {
 	}
 
 	log.Debug("Worker thread pool initialized. Starting dispatcher...")
-	wp.startDispatcher()
+	go wp.startDispatcher()
 }
 
 // Await waits for the job queue to be empty and all workers to idle
@@ -79,13 +79,6 @@ func (wp *WorkerPool) Await() {
 	for !wp.idle {
 		wp.idleCond.Wait()
 	}
-}
-
-// RunTillTermination starts but will auto terminate itself when all
-// work is done. i.e. job queue is empty and all workers are free
-func (wp *WorkerPool) RunTillTermination() {
-	wp.Await()
-	wp.Stop()
 }
 
 func (wp *WorkerPool) startDispatcher() {
@@ -107,22 +100,35 @@ func (wp *WorkerPool) startDispatcher() {
 			chosenWorker := <-wp.workerChannels
 			chosenWorker <- *t
 			continue
-		} else if len(wp.workerChannels) == wp.workerSize {
+		} else if len(wp.workerChannels) == wp.workerSize { // all threads free and job queue is empty
 			wp.idleCond.L.Lock()
 			wp.idle = true
 			wp.idleCond.Broadcast()
+			wp.qMu.Unlock()
+
+			// wait until more work gets queued up to reduce CPU spinning
+			for wp.idle {
+				wp.idleCond.Wait()
+			}
 			wp.idleCond.L.Unlock()
+			continue
 		}
-		// TODO: maybe add an else w/ time.Sleep to reduce CPU cycle spinning
 		wp.qMu.Unlock()
 	}
 }
 
 // Stop sends kill signal to worker threads and waits on
-// dispatcher to stop. Stop can be called multiple times
-// without issue
+// dispatcher to stop. Note that Stop notifies the dispatcher
+// that it is no longer idle.
+// Stop can be called multiple times without issue.
 func (wp *WorkerPool) Stop() {
 	wp.cancelDispatcher()
+
+	wp.idleCond.L.Lock()
+	wp.idle = false
+	wp.idleCond.Broadcast()
+	wp.idleCond.L.Unlock()
+
 	wp.dispatcherRunning.Wait()
 }
 
@@ -130,14 +136,34 @@ func (wp *WorkerPool) Enqueue(job Job) {
 	wp.qMu.Lock()
 	defer wp.qMu.Unlock()
 
+	emptyQ := wp.jobQueue.IsEmpty()
 	wp.jobQueue.Enqueue(&job)
+
+	if emptyQ {
+		wp.idleCond.L.Lock()
+		if wp.idle {
+			wp.idle = false
+			wp.idleCond.Signal()
+		}
+		wp.idleCond.L.Unlock()
+	}
 }
 
 func (wp *WorkerPool) EnqueueJobs(jobs []*Job) {
 	wp.qMu.Lock()
 	defer wp.qMu.Unlock()
 
+	emptyQ := wp.jobQueue.IsEmpty()
 	for _, job := range jobs {
 		wp.jobQueue.Enqueue(job)
+	}
+
+	if emptyQ {
+		wp.idleCond.L.Lock()
+		if wp.idle {
+			wp.idle = false
+			wp.idleCond.Signal()
+		}
+		wp.idleCond.L.Unlock()
 	}
 }
