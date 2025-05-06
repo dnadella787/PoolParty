@@ -56,14 +56,14 @@ func NewWorkerPool(maxWorkers int, initJobQueueSize int) (*WorkerPool, error) {
 	}, nil
 }
 
-// Start runs the dispatcher + thread pool off a separate thread
-// so it can be referenced and assigned work on the main thread
+// Start simply starts the dispatcher and keeps on running until Stop()
+// is called
 func (wp *WorkerPool) Start() {
-	go wp.startWithSelfTermination(false)
+	wp.startWithSelfTermination(false)
 }
 
-// RunTillTermination runs the dispatcher + thread pool off the main thread
-// so the program halts while waiting for the processing to complete
+// RunTillTermination starts but will auto terminate itself when all
+// work is done. i.e. job queue is empty and all workers are free
 func (wp *WorkerPool) RunTillTermination() {
 	wp.startWithSelfTermination(true)
 }
